@@ -65,8 +65,8 @@ if __name__ == "__main__":
     V = float(dat[1][dat[0].index('Volume')])  # get volume
 
     dN = args.dN
-    smth_bin = int(0.15 * V / dN)  # set smoothing bin size to include density range of 0.05
-    if smth_bin % 2 != 0:  # ensure that this is an even number so smoothed distr. corresponds to N in list of N's
+    smth_bin = int(0.05 * V / dN)  # set smoothing bin size to include density range of 0.05
+    if smth_bin % 2 != 0:  # ensure that this is an even number so that savgol filter works
         smth_bin = int(smth_bin + 1)
 
     dat = dat[1:]  # remove headers from data
