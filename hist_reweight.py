@@ -45,10 +45,10 @@ if __name__ == "__main__":
 
     parser = ap.ArgumentParser(description='Perform histogram reweighting from LAMMPS simulations.')
     parser.add_argument('-f', '--file', default='lammps_out.txt', type=str, help='Extracted LAMMPS data as text file.')
-    parser.add_argument('-K', '--bins', default=100, type=int, help='Number of energy bins.')
+    parser.add_argument('-K', '--bins', default=200, type=int, help='Number of energy bins.')
     parser.add_argument('-dN', '--dN', default=3, type=int, help='Number of molecules per bin (typically an odd number.')
-    parser.add_argument('-g', '--graphs', default=False, type=bool, help='Make graphs if True.')
-    parser.add_argument('-r', '--resolution', default=20, type=int, help='Number of equilibrium points to find.')
+    parser.add_argument('-g', '--graphs', default=True, type=bool, help='Make graphs if True.')
+    parser.add_argument('-r', '--resolution', default=100, type=int, help='Number of equilibrium points to find.')
     parser.add_argument('-s', '--save', default='s.obj', type=str, help='Filename to store entropy matrix as.')
     parser.add_argument('-l', '--load', default='s.obj', type=str, help='Filename for stored entropy matrix.')
 
@@ -60,13 +60,13 @@ if __name__ == "__main__":
     dat = [lines[i].split() for i in range(0, len(lines))]  # split columns into array
     U_ind = dat[0].index('PotEng')  # find column numbers for important parameters
     N_ind = dat[0].index('Atoms')
-    T_ind = dat[0].index('v_T_j')
+    T_ind = dat[0].index('v_temp')
     mu_ind = dat[0].index('v_mu_j')
     V = float(dat[1][dat[0].index('Volume')])  # get volume
 
     dN = args.dN
     smth_bin = int(0.05 * V / dN)  # set smoothing bin size to include density range of 0.05
-    if smth_bin % 2 != 0:  # ensure that this is an even number so smoothed distr. corresponds to N in list of N's
+    if smth_bin % 2 != 0:  # ensure that this is an even number so that savgol filter works
         smth_bin = int(smth_bin + 1)
 
     dat = dat[1:]  # remove headers from data
@@ -88,19 +88,25 @@ if __name__ == "__main__":
     mu = [i for _, i in Tmu_pairs]
     N = [int(i[N_ind]) for i in dat]
     U = [float(i[U_ind]) * int(i[N_ind]) for i in dat]
-
-    K = args.bins  # rename number of energy bins as K
+    if args.bins:
+        K = args.bins  # rename number of energy bins as K
+    else:
+        K = int(max([abs(i) for i in U])/10)*10
 
     if args.graphs:  # graph the distributions of (N,U) points
         for j in range(0, J):
-            lbl = 'T = %.3f, $\mu$ = %.3f' % (T[j], mu[j])
+            lbl = 'T = %.3f, $\mu$ = %.5f' % (T[j], mu[j])
             strt = sum([n[i] for i in range(0, j)])
             end = sum([n[i] for i in range(0, j + 1)])
             plt.scatter(N[strt:end], U[strt:end], 0.5, label=lbl)
         plt.legend()
         plt.xlabel('N')
         plt.ylabel('U')
+        if plt.get_backend() == 'TkAgg':
+            manager = plt.get_current_fig_manager()
+            manager.resize(*manager.window.maxsize())
         plt.show(block=False)
+        plt.close()
 
     U_max = max(U) + 10 ** (-8)  # include epsilon such that max U value is binned into highest bin
     U_min = min(U)
@@ -115,18 +121,20 @@ if __name__ == "__main__":
         try:  # try to open the file (in case it does not exist)
             with open(args.load, 'rb') as file2:
                 smat = pickle.load(file2)
+            # if s was loaded properly, check that it is the proper size for the data
+            if len(smat) != K or len(smat[0]) != M:
+                s = []  # if it does not match the data/bin sizes, set it to be empty
+            else:  # if the s matrix matches the data, find where there are nonzero entries
+                km_list = []  # get list of locations of nonzero S for building probability distr
+                for k in range(0, K):
+                    for m in range(0, M):
+                        if smat[k][m] != 0:
+                            km_list.append([k, m])
+                s = [smat[k][m] for k, m in km_list]  # reformat matrix into a list
         except:  # in the event the file does not exist, set s to empty
             s = []
-        # if s was loaded properly, check that it is the proper size for the data
-        if len(smat) != K or len(smat[0]) != M:
-            s = []  # if it does not match the data/bin sizes, set it to be empty
-        else:  # if the s matrix matches the data, find where there are nonzero entries
-            km_list = []  # get list of locations of nonzero S for building probability distr
-            for k in range(0, K):
-                for m in range(0, M):
-                    if smat[k][m] != 0:
-                        km_list.append([k,m])
-            s = [smat[k][m] for k, m in km_list]  # reformat matrix into a list
+
+
     else:
         s = []
 
@@ -209,7 +217,7 @@ if __name__ == "__main__":
         p0 = p(t, Mu)  # get 2D prob. distr.
         p_proj = [sum([p0[k][m] for k in range(0, K)]) for m in range(0, M)]  # project onto N
         p_smooth = smooth(p_proj, smth_bin)  # smooth using a moving average
-        p_smooth = chop(p_smooth, 1 / M / 10)  # chop small terms (with < 1/10 of uniform prob) for smoothness in savgol
+        p_smooth = chop(p_smooth, 1 / M / 100)  # chop small terms (with < 1/10 of uniform prob) for smoothness in savgol
         p_smooth = list(savgol_filter(p_smooth, smth_bin - 1, 1))  # smooth using savgol filter
         der = diff(p_smooth)  # find the difference between adjacent points (proportional to derivative)
         extrma = diff(sign(der))  # find the differences between the signs of the derivative
@@ -246,7 +254,7 @@ if __name__ == "__main__":
         p0 = p(t, Mu)
         p_proj = [sum([p0[k][m] for k in range(0, K)]) for m in range(0, M)]
         p_smooth = smooth(p_proj, smth_bin)
-        p_smooth = chop(p_smooth, 1 / M / 10)
+        p_smooth = chop(p_smooth, 1 / M / 100)
         p_smooth = list(savgol_filter(p_smooth, smth_bin - 1, 1))
         der = diff(p_smooth)
         extrma = diff(sign(der))
@@ -265,9 +273,10 @@ if __name__ == "__main__":
                 valley = int(sum(valleys) / len(valleys)) + 1
             else:
                 valley = int(sum(peaks) / 2) + 1
+            plt.scatter(N_k[valley], p_proj[valley], color='k')
         elif modes > 2:
             valley = int((peaks[0] + peaks[-1]) / 2) + 1
-        plt.scatter(N_k[valley], p_proj[valley], color='k')
+            plt.scatter(N_k[valley], p_proj[valley], color='k')
         plt.plot(N_k, p_proj)
         plt.plot(N_k, p_smooth)
         plt.show()
@@ -277,7 +286,7 @@ if __name__ == "__main__":
         # return the equilibrium chemical potential at temperature t, searching between mumin and mumax
         fmin = 0.5  # set the minimum err found to 0.5
         fcut = 0.49  # set the cutoff value for starting the local optimization (sufficiently bimodal cutoff)
-        num_pts = int(2 * res)  # search chemical potentials at twice the resolution of plotting
+        num_pts = int(1.3 * res)  # search chemical potentials at twice the resolution of plotting
         pts = [mumin + i * (mumax - mumin) / (num_pts - 1) for i in range(0, num_pts)]  # determine mu to check
         new_pts = pts.copy()
         t1 = time.time()
@@ -335,7 +344,9 @@ if __name__ == "__main__":
                 fval = fval1
             else:
                 if fval1 == 0.5:
-                    raise Exception('Bad conditions reached during optimization.')
+                    eps = 10*eps
+                    if eps > 0.001:
+                        raise Exception('Bad Conditions reached during optimization')
                 else:
                     mu_s = mu_new1
                     fval = fval1
@@ -351,7 +362,7 @@ if __name__ == "__main__":
         p0 = p(t, Mu)
         p_proj = [sum([p0[k][m] for k in range(0, K)]) for m in range(0, M)]
         p_smooth = smooth(p_proj, smth_bin)
-        p_smooth = chop(p_smooth, 1 / M / 10)
+        p_smooth = chop(p_smooth, 1 / M / 100)
         p_smooth = list(savgol_filter(p_smooth, smth_bin - 1, 1))
         der = diff(p_smooth)
         extrma = diff(sign(der))
@@ -361,11 +372,17 @@ if __name__ == "__main__":
         if der[-1] > 0:
             peaks.append(M - 1)
         valleys = [i for i, x in enumerate(extrma) if x == 2]
-        if len(valleys) == 1:
-            valley = valleys[0] + 1
-        elif len(valleys) > 1:
-            valleys = [i for i in valleys if peaks[0] < i < peaks[1]]
-            valley = int(sum(valleys) / len(valleys)) + 1
+        modes = len(peaks)
+        if modes == 2:
+            if len(valleys) == 1:
+                valley = valleys[0] + 1
+            elif len(valleys) > 1:
+                valleys = [i for i in valleys if peaks[0] < i < peaks[1]]
+                valley = int(sum(valleys) / len(valleys)) + 1
+            else:
+                valley = int(sum(peaks) / 2) + 1
+        elif modes > 2:
+            valley = int((peaks[0] + peaks[-1]) / 2) + 1
         else:
             valley = int(sum(peaks) / 2) + 1
         rV = sum([N_k[i] * p_proj[i] for i in range(0, valley)]) / sum([p_proj[i] for i in range(0, valley)]) / V
@@ -384,7 +401,7 @@ if __name__ == "__main__":
     T_max = max(T)
     temps = [T_min + i * (T_max - T_min) / (res - 1) for i in range(0, res)]
     # set min and max mu to check within  #### may need to change this ####
-    mu_min = min(mu)
+    mu_min = min(mu)*2
     mu_max = max(mu)
 
     mu0 = mu_min  # rename minimum since range to check will be decreased later
@@ -405,23 +422,21 @@ if __name__ == "__main__":
 
     # if modality was not 2 at higher temps, this is likely due to it being past the critical point, so remove these
     for i in range(1, res + 1):
-        if Mds[-i] == 2:
-            break
-        else:
-            rho_V.pop(-1)
-            rho_L.pop(-1)
-            Ts.pop(-1)
-            mu_sats.pop(-1)
+        if Mds:
+            if Mds[-i] == 2:
+                break
+            else:
+                rho_V.pop(-1)
+                rho_L.pop(-1)
+                Ts.pop(-1)
+                mu_sats.pop(-1)
 
     if args.graphs:  # plot the data
         plt.plot(rho_V, temps[0:len(rho_V)], color='b', label="Histogram Reweighting")
         plt.plot(rho_L, temps[0:len(rho_L)], color='b')
-        # note that the following is specific to LJ fluid
-        plt.scatter([1.131E-02, 1.951E-02, 2.560E-02, 3.188E-02, 5.044E-02, 7.951E-02, 1.350E-01],
-                    [0.65, 0.70, 0.72871, 0.75, 0.80, 0.85, 0.90], color='k')
-        plt.scatter([7.617E-01, 7.293E-01, 7.092E-01, 6.933E-01, 6.521E-01, 6.010E-01, 5.244E-01],
-                    [0.65, 0.70, 0.72871, 0.75, 0.80, 0.85, 0.90], color='k', label="NIST")
         plt.legend()
         plt.xlabel('Density, $\\rho$')
         plt.ylabel('Temperature, $T$')
         plt.show(block=False)
+
+print('Done')  # this is so I can stop and view graph
