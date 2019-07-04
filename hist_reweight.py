@@ -44,13 +44,19 @@ if __name__ == "__main__":
     import argparse as ap
 
     parser = ap.ArgumentParser(description='Perform histogram reweighting from LAMMPS simulations.')
-    parser.add_argument('-f', '--file', default='lammps_out.txt', type=str, help='Extracted LAMMPS data as text file.')
-    parser.add_argument('-K', '--bins', default=200, type=int, help='Number of energy bins.')
-    parser.add_argument('-dN', '--dN', default=3, type=int, help='Number of molecules per bin (typically an odd number.')
+    parser.add_argument('-f', '--file', default='lammps_out2.txt', type=str, help='Extracted LAMMPS data as text file.')
+    parser.add_argument('-K', '--bins', type=int, help='Number of energy bins.')
+    parser.add_argument('-dN', '--dN', default=3, type=int, help='Number of molecules per bin. Typically an odd number.')
     parser.add_argument('-g', '--graphs', default=True, type=bool, help='Make graphs if True.')
-    parser.add_argument('-r', '--resolution', default=100, type=int, help='Number of equilibrium points to find.')
+    parser.add_argument('-r', '--resolution', default=50, type=int, help='Number of equilibrium points to find.')
     parser.add_argument('-s', '--save', default='s.obj', type=str, help='Filename to store entropy matrix as.')
     parser.add_argument('-l', '--load', default='s.obj', type=str, help='Filename for stored entropy matrix.')
+    parser.add_argument('-d', '--direction', default=True, type=bool,
+                        help='Determines search direction for equilibrium points - True searches from low temps to high temps.')
+    # note that the reverse direction is much slower and a guess for the critical temperature is highly recommended
+    parser.add_argument('-Tc', '--Tc_guess', type=float, help='Guess for critical temperature. Higher temperatures will NOT be searched.')
+    parser.add_argument('-T', '--temp',default='v_temp', type=str,help='Name of header for temperature in LAMMPS.')
+    parser.add_argument('-m', '--mu', default='v_mu_j', type=str, help='Name of header for chemical potential in LAMMPS.')
 
     # Parse the command-line arguments
     args = parser.parse_args()
@@ -60,13 +66,13 @@ if __name__ == "__main__":
     dat = [lines[i].split() for i in range(0, len(lines))]  # split columns into array
     U_ind = dat[0].index('PotEng')  # find column numbers for important parameters
     N_ind = dat[0].index('Atoms')
-    T_ind = dat[0].index('v_temp')
-    mu_ind = dat[0].index('v_mu_j')
+    T_ind = dat[0].index(args.temp)
+    mu_ind = dat[0].index(args.mu)
     V = float(dat[1][dat[0].index('Volume')])  # get volume
 
     dN = args.dN
     smth_bin = int(0.05 * V / dN)  # set smoothing bin size to include density range of 0.05
-    if smth_bin % 2 != 0:  # ensure that this is an even number so that savgol filter works
+    if smth_bin % 2 != 0:  # ensure that this is an even number so smoothed distr. corresponds to N in list of N's
         smth_bin = int(smth_bin + 1)
 
     dat = dat[1:]  # remove headers from data
@@ -106,6 +112,7 @@ if __name__ == "__main__":
             manager = plt.get_current_fig_manager()
             manager.resize(*manager.window.maxsize())
         plt.show(block=False)
+        plt.savefig('Sampling_Graph.png')
         plt.close()
 
     U_max = max(U) + 10 ** (-8)  # include epsilon such that max U value is binned into highest bin
@@ -195,6 +202,7 @@ if __name__ == "__main__":
             f = [i for i in fnew]
             count += 1
         print(count)
+        del f, fnew, wkm, ukmj, wj, log_c, c
         if args.save:  # save entropy as a matrix
             smat = [[0 for i in range(0, M)] for j in range(0, K)]  # entropy matrix
             for i in range(0, len(km_list)):
@@ -242,7 +250,18 @@ if __name__ == "__main__":
                            + (sum([p_proj[i] for i in range(valley, M)]) - 0.5) ** 2
             return sqerr
         elif modes > 2:  # there cannot be more than two modes, so more should still be counted as bimodal
-            valley = int((peaks[0] + peaks[-1]) / 2) + 1  # set the min to be the middle of the two outer peaks
+            if len(valleys) == 1 and peaks[0] < valleys[0] < peaks[-1]:
+                valley = valleys[0] + 1
+            elif len(valleys) > 1:
+                valleys = [i for i in valleys if peaks[0] < i < peaks[-1]]
+                msd = []
+                for i in valleys:
+                    lows = [j for j in peaks if j < i]
+                    highs = [j for j in peaks if j > i]
+                    msd.append((i-lows[-1])**2+(i-highs[0])**2)
+                valley = valleys[msd.index(max(msd))]
+            else:
+                valley = int((peaks[0] + peaks[-1]) / 2) + 1
             sqerr: float = (sum([p_proj[i] for i in range(0, valley)]) - 0.5) ** 2 \
                            + (sum([p_proj[i] for i in range(valley, M)]) - 0.5) ** 2
             return sqerr
@@ -275,7 +294,18 @@ if __name__ == "__main__":
                 valley = int(sum(peaks) / 2) + 1
             plt.scatter(N_k[valley], p_proj[valley], color='k')
         elif modes > 2:
-            valley = int((peaks[0] + peaks[-1]) / 2) + 1
+            if len(valleys) == 1 and peaks[0] < valleys[0] < peaks[-1]:
+                valley = valleys[0] + 1
+            elif len(valleys) > 1:
+                valleys = [i for i in valleys if peaks[0] < i < peaks[-1]]
+                msd = []
+                for i in valleys:
+                    lows = [j for j in peaks if j < i]
+                    highs = [j for j in peaks if j > i]
+                    msd.append((i-lows[-1])**2+(i-highs[0])**2)
+                valley = valleys[msd.index(max(msd))]
+            else:
+                valley = int((peaks[0] + peaks[-1]) / 2) + 1
             plt.scatter(N_k[valley], p_proj[valley], color='k')
         plt.plot(N_k, p_proj)
         plt.plot(N_k, p_smooth)
@@ -286,8 +316,11 @@ if __name__ == "__main__":
         # return the equilibrium chemical potential at temperature t, searching between mumin and mumax
         fmin = 0.5  # set the minimum err found to 0.5
         fcut = 0.49  # set the cutoff value for starting the local optimization (sufficiently bimodal cutoff)
-        num_pts = int(1.3 * res)  # search chemical potentials at twice the resolution of plotting
-        pts = [mumin + i * (mumax - mumin) / (num_pts - 1) for i in range(0, num_pts)]  # determine mu to check
+        num_pts = int(2 * res)  # search chemical potentials at twice the resolution of plotting
+        if args.direction:
+            pts = [mumin + i * (mumax - mumin) / (num_pts - 1) for i in range(0, num_pts)]  # determine mu to check
+        else:
+            pts = [mumax - i * (mumax - mumin) / (num_pts - 1) for i in range(0, num_pts)]  # determine mu to check
         new_pts = pts.copy()
         t1 = time.time()
         flag = 0  # flag for whether or not a bimodal distribution has been found
@@ -297,9 +330,11 @@ if __name__ == "__main__":
                 fvals[i] = f(t, new_pts[i])  # for potentials in list of new points to check, calculate error
                 if flag == 0:  # if no bimodal distr has been found
                     if fvals[i] < fcut:  # check if the function is bimodal
+                        if args.direction:
+                            break
                         flag = 1  # set flag indicating bimodal distr has been found
                 else:  # if bimodal distr has been found
-                    if fvals[i] > fcut:  # stop search upon reaching next distr which is not bimodal
+                    if fvals[i] > fvals[i-1]:  # stop search upon reaching next distr which is not bimodal
                         break
             fmin = min(fvals)  # find minimum err bimodal distr in list
             mu_0 = new_pts[fvals.index(fmin)]  # set initial guess for mu to the one corresponding to said minimum err
@@ -307,9 +342,12 @@ if __name__ == "__main__":
             new_pts = [(pts[i] + pts[i + 1]) / 2 for i in range(0, len(pts) - 1)]  # set new pts to btwn old pts
             num_pts = len(pts) + len(new_pts)
             if num_pts > 20 * res and fmin > fcut:  # if the number of points is too high and no bimodal distr. found
-                print('No bimodal distribution found.')
+                print('No bimodal distribution found at T = ', t, '.')
                 return []
-            pts = [mumin + i * (mumax - mumin) / (num_pts - 1) for i in range(0, num_pts)]
+            if args.direction:
+                pts = [mumin + i * (mumax - mumin) / (num_pts - 1) for i in range(0, num_pts)]  # determine mu to check
+            else:
+                pts = [mumax - i * (mumax - mumin) / (num_pts - 1) for i in range(0, num_pts)]  # determine mu to check
         print(time.time() - t1)
         eps = 1e-6  # step size for derivatives
         iters = 0  # counter of iterations
@@ -318,7 +356,8 @@ if __name__ == "__main__":
         fval = fmin  # starting err value
         print('The starting error in local minimization is: ', fval)
         # since min is also zero, we use mixture of newton's method for optimization and for root finding
-        while fval > tol2 and iters < 100:
+        maxiters = 10
+        while fval > tol2 and iters < maxiters:
             f_plus = f(t, mu_s + eps)  # evaluate necessary info for derivatives
             f_min = f(t, mu_s - eps)
             fder = (f_plus - f_min) / (2 * eps)  # the central finite diff. estimate of 1st derivative
@@ -352,7 +391,7 @@ if __name__ == "__main__":
                     fval = fval1
             iters += 1
         print('The optimization took ',iters,' iterations.')
-        if iters == 100:
+        if iters == maxiters:
             print('Maximum number of iterations in optimization exceeded.')
             return []
         return mu_s
@@ -382,9 +421,20 @@ if __name__ == "__main__":
             else:
                 valley = int(sum(peaks) / 2) + 1
         elif modes > 2:
-            valley = int((peaks[0] + peaks[-1]) / 2) + 1
+            if len(valleys) == 1 and peaks[0] < valleys[0] < peaks[-1]:
+                valley = valleys[0] + 1
+            elif len(valleys) > 1:
+                valleys = [i for i in valleys if peaks[0] < i < peaks[-1]]
+                msd = []
+                for i in valleys:
+                    lows = [j for j in peaks if j < i]
+                    highs = [j for j in peaks if j > i]
+                    msd.append((i-lows[-1])**2+(i-highs[0])**2)
+                valley = valleys[msd.index(max(msd))]
+            else:
+                valley = int((peaks[0] + peaks[-1]) / 2) + 1
         else:
-            valley = int(sum(peaks) / 2) + 1
+            raise Exception('No distinct phases to determine densities of.')
         rV = sum([N_k[i] * p_proj[i] for i in range(0, valley)]) / sum([p_proj[i] for i in range(0, valley)]) / V
         rL = sum([N_k[i] * p_proj[i] for i in range(valley, M)]) / sum([p_proj[i] for i in range(valley, M)]) / V
         return [rL, rV, len(peaks)]
@@ -395,19 +445,32 @@ if __name__ == "__main__":
     mu_sats = []  # critical chemical potentials
     Ts = []  # critical temperatures
     Mds = []  # modalities
-    res = args.resolution  # rename resolution (number of temperature pts to check)
-    # create list of temperatures to check
-    T_min = min(T)
-    T_max = max(T)
-    temps = [T_min + i * (T_max - T_min) / (res - 1) for i in range(0, res)]
+
     # set min and max mu to check within  #### may need to change this ####
-    mu_min = min(mu)*2
+    mu_min = 2*min(mu)
     mu_max = max(mu)
 
-    mu0 = mu_min  # rename minimum since range to check will be decreased later
+    res = args.resolution  # rename resolution (number of temperature pts to check)
+
+    # create list of temperatures to check
+    T_min = min(T)
+    if args.Tc_guess:
+        T_max = args.Tc_guess
+    else:
+        T_max = max(T)
+    if args.direction:
+        temps = [T_min + i * (T_max - T_min) / (res - 1) for i in range(0, res)]
+        mu0 = mu_min  # rename minimum since range to check will be decreased later
+    else:
+        temps = [T_max - i * (T_max - T_min) / (res - 1) for i in range(0, res)]
+        mu0 = mu_max  # rename maximum since range to check will be decreased later
+
     t0 = time.time()
     for ts in temps:
-        mu_sat = min_f(ts, mu0, mu_max)  # find equilibrium chemical potential
+        if args.direction:
+            mu_sat = min_f(ts, mu0, mu_max)  # find equilibrium chemical potential
+        else:
+            mu_sat = min_f(ts, mu_min, mu0)  # find equilibrium chemical potential
         if mu_sat:  # as long as it was found, get critical densities and update lists
             [r_L, r_V, mds] = rho_sats(ts, mu_sat)
             rho_L.append(r_L)
@@ -417,7 +480,8 @@ if __name__ == "__main__":
             Ts.append(ts)
             Mds.append(mds)
         else:  # if it wasn't found, it should be because T > T of critical pt
-            break
+            if args.direction:
+                break
     print(time.time() - t0)
 
     # if modality was not 2 at higher temps, this is likely due to it being past the critical point, so remove these
@@ -432,11 +496,16 @@ if __name__ == "__main__":
                 mu_sats.pop(-1)
 
     if args.graphs:  # plot the data
-        plt.plot(rho_V, temps[0:len(rho_V)], color='b', label="Histogram Reweighting")
-        plt.plot(rho_L, temps[0:len(rho_L)], color='b')
-        plt.legend()
+        plt.plot(rho_V, Ts, color='b')
+        plt.plot(rho_L, Ts, color='b')
         plt.xlabel('Density, $\\rho$')
         plt.ylabel('Temperature, $T$')
+        # note that the following is specific to LJ fluid
+        plt.scatter([1.131E-02, 1.951E-02, 2.560E-02, 3.188E-02, 5.044E-02, 7.951E-02, 1.350E-01],
+                    [0.65, 0.70, 0.72871, 0.75, 0.80, 0.85, 0.90], color='k')
+        plt.scatter([7.617E-01, 7.293E-01, 7.092E-01, 6.933E-01, 6.521E-01, 6.010E-01, 5.244E-01],
+                   [0.65, 0.70, 0.72871, 0.75, 0.80, 0.85, 0.90], color='k', label="NIST")
         plt.show(block=False)
+        plt.savefig('Phase_Diagram.png')
 
 print('Done')  # this is so I can stop and view graph
